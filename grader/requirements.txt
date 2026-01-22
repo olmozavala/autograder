@@ -1,0 +1,15 @@
+# Grader Pod Dependencies
+
+
+# OpenAI API with structured output support
+openai>=1.40.0
+
+# Data validation and structured output schemas
+pydantic>=2.0.0
+
+# Type hints support
+typing_extensions>=4.0.0
+
+# Configuration parsing
+PyYAML>=6.0
+

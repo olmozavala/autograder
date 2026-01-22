@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# VS Code
+.vscode/
+
+# Environment variables and secrets
+.env
+
+# Grading artifacts
+grades/
+test_report.xml
+grade.json
+
+# Temporary data
+test_folder/
+tests/
+__tmp__/
+
+# IDE/Editor misc
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Virtual environments
+venv/
+.venv/
+env/
