@@ -94,6 +94,53 @@ class LLMGrader:
 
             # Ensure student_id is set correctly
             result.student_id = student_id
+
+            # Enforce rubric section names and max points
+            llm_sections = {s.section_name: s for s in result.sections}
+            new_sections = []
+            
+            print(f"    [DEBUG] LLM returned sections: {list(llm_sections.keys())}")
+            
+            for rubric_section in rubric.sections:
+                matched = None
+                # Try exact match first
+                if rubric_section.name in llm_sections:
+                    matched = llm_sections[rubric_section.name]
+                else:
+                    # Try fuzzy match (case-insensitive, substring in either direction)
+                    r_name = rubric_section.name.lower()
+                    for l_name in llm_sections:
+                        l_name_lower = l_name.lower()
+                        if l_name_lower == r_name or l_name_lower in r_name or r_name in l_name_lower:
+                            matched = llm_sections[l_name]
+                            print(f"    [DEBUG] Matched rubric '{rubric_section.name}' to LLM '{l_name}'")
+                            break
+                
+                if matched:
+                    # Enforce rubric values
+                    points_earned = min(matched.points_earned, rubric_section.points)
+                    new_sections.append(SectionGrade(
+                        section_name=rubric_section.name,
+                        points_earned=points_earned,
+                        max_points=rubric_section.points,
+                        feedback=matched.feedback
+                    ))
+                else:
+                    print(f"    [DEBUG] No match for rubric section: '{rubric_section.name}'")
+                    new_sections.append(SectionGrade(
+                        section_name=rubric_section.name,
+                        points_earned=0,
+                        max_points=rubric_section.points,
+                        feedback="Section not found or not graded by LLM."
+                    ))
+            
+            # Replace sections and recalculate totals
+            result.sections = new_sections
+            result.total_score = sum(s.points_earned for s in new_sections if not any(
+                kw in s.section_name.lower() for kw in ["extra", "bonus"]
+            ))
+            result.max_score = rubric.total_points
+            
             return result
 
         except Exception as e:
@@ -374,4 +421,3 @@ Provide overall feedback that is constructive and helps the student improve.
                 "Manual review is required for accurate grading."
             ),
         )
-

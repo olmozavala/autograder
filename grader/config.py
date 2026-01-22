@@ -16,6 +16,7 @@ POSSIBLE_ANSWERS_FILENAMES: list[str] = [ANSWERS_FILENAME, TEACHER_ANSWERS_FILEN
 REPORT_FILENAME: str = "report.md"
 GRADE_OUTPUT_FILENAME: str = "grade.json"
 TEST_REPORT_FILENAME: str = "test_report.xml"
+IMAGE_EXTENSIONS: list[str] = [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp"]
 
 # Pytest configuration
 PYTEST_ARGS: list[str] = [

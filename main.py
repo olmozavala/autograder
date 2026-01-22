@@ -1,21 +1,23 @@
 """
-CLI entrypoint for the Grader Pod system.
+Grader Pod: Automated homework grading with Docker + LLM
 
-Orchestrates the complete grading pipeline:
-1. Parse rubric from README.md
-2. Iterate through student submissions
-3. Run tests in Docker containers
-4. Grade with LLM
-5. Output results as JSON
+Usage:
+  main.py [--config=PATH]
+  main.py (-h | --help)
+
+Options:
+  --config=PATH  Path to YAML configuration file [default: grader_config.yml].
+  -h --help      Show this screen.
 """
 
-import argparse
+from docopt import docopt
 import json
 import re
 import sys
 import shutil
 import webbrowser
 import re
+import subprocess
 from pathlib import Path
 
 from grader.config import ANSWERS_FILENAME, DEFAULT_GRADES_DIR, GRADE_OUTPUT_FILENAME, REPORT_FILENAME
@@ -49,23 +51,65 @@ def find_submissions(submissions_dir: Path) -> list[StudentSubmission]:
             continue
 
         answers_path = item / ANSWERS_FILENAME
-        report_path = item / REPORT_FILENAME
+        
+        # Fuzzy match report file
+        report_path = None
+        report_file_name = None
+        
+        # First check for exact match
+        if (item / REPORT_FILENAME).exists():
+            report_path = item / REPORT_FILENAME
+            report_file_name = REPORT_FILENAME
+        else:
+            # Look for any file with "report" in the name (case-insensitive)
+            candidates = [f for f in item.iterdir() if f.is_file() and "report" in f.name.lower()]
+            # Prioritize markdown files
+            md_candidates = [f for f in candidates if f.suffix.lower() == ".md"]
+            if md_candidates:
+                report_path = md_candidates[0]
+                report_file_name = report_path.name
+            elif candidates:
+                report_path = candidates[0]
+                report_file_name = report_path.name
 
         # Read report content if it exists
         report_content = ""
-        if report_path.exists():
+        if report_path and report_path.exists():
             try:
                 report_content = report_path.read_text(encoding="utf-8")
             except Exception:
                 report_content = "[Error reading report]"
+
+        # Try to find GitHub repository
+        github_repo = None
+        try:
+            # Run git remote get-url origin in the submission directory
+            result = subprocess.run(
+                ["git", "remote", "get-url", "origin"],
+                cwd=str(item),
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if result.returncode == 0:
+                url = result.stdout.strip()
+                # Parse owner/repo from URL
+                # Handle git@github.com:owner/repo.git or https://github.com/owner/repo.git
+                match = re.search(r"github\.com[:/](.+?)\.git", url)
+                if match:
+                    github_repo = match.group(1)
+        except Exception:
+            pass
 
         submissions.append(
             StudentSubmission(
                 student_id=item.name,
                 submission_path=str(item.resolve()),
                 has_answers_file=answers_path.exists(),
-                has_report_file=report_path.exists(),
+                has_report_file=report_path is not None and report_path.exists(),
                 report_content=report_content,
+                report_file_path=report_file_name,
+                github_repo=github_repo,
             )
         )
 
@@ -88,12 +132,11 @@ def extract_images(report_content: str) -> list[tuple[str, str]]:
     img_regex = r"!\[(.*?)\]\((.*?)\)"
     matches = re.findall(img_regex, report_content)
 
-    # Filter for image extensions if not already explicit
     images = []
-    extensions = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp"}
-
+    from grader.config import IMAGE_EXTENSIONS
+    
     for caption, path in matches:
-        if any(path.lower().endswith(ext) for ext in extensions):
+        if any(path.lower().endswith(ext) for ext in IMAGE_EXTENSIONS):
             images.append((path, caption))
 
     return images
@@ -152,7 +195,6 @@ def run_grading_pipeline(
         tests_dir: Optional path to shared test files.
         test_data_dir: Optional path to test data folder (e.g., test_folder).
         grades_dir: Optional path to save aggregated grades.
-        skip_llm: Skip LLM grading (use for testing runner only).
         dashboard_port: Port to run the dashboard on (default: 8050).
         verbose: Print verbose output.
 
@@ -264,6 +306,9 @@ def run_grading_pipeline(
                 report_content=submission.report_content,
                 figure_descriptions=figure_descriptions,
             )
+            # Propagate github_repo and submission_path from submission
+            grade.github_repo = submission.github_repo
+            grade.submission_path = submission.submission_path
         else:
             # Create placeholder grade
             from grader.models import SectionGrade
@@ -284,51 +329,66 @@ def run_grading_pipeline(
                 sections=sections,
                 code_execution_passed=execution_result.success,
                 execution_logs=execution_result.setup_log + "\n" + execution_result.test_log,
+                github_repo=submission.github_repo,
+                submission_path=submission.submission_path,
             )
 
         # Copy report and images to output folder (Always run this)
         student_output_dir = grades_dir / submission.student_id
         student_output_dir.mkdir(parents=True, exist_ok=True)
         try:
-            # Copy report (md or pdf)
-            # Handle .md specially to rewrite image paths
-            report_md_file = submission_path / "report.md"
-            if report_md_file.exists():
-                 with open(report_md_file, "r") as f:
-                     content = f.read()
-                 
-                 # Rewrite image paths: ![alt](path) -> ![alt](/files/{student_id}/{path})
-                 # avoiding absolute paths
-                 def replace_link(match):
-                     alt = match.group(1)
-                     link = match.group(2)
-                     if link.startswith("http") or link.startswith("/"):
-                         return match.group(0)
-                     # Clean up any ./ prefix
-                     if link.startswith("./"):
-                         link = link[2:]
-                     return f"![{alt}](/files/{submission.student_id}/{link})"
-                 
-                 content = re.sub(r'!\[(.*?)\]\((.*?)\)', replace_link, content)
-                 
-                 output_report_path = student_output_dir / "report.md"
-                 with open(output_report_path, "w") as f:
-                     f.write(content)
-                 
-                 if verbose:
-                     print(f"    Processed and copied report.md")
+            # Copy report file if found
+            if submission.report_file_path:
+                source_path = submission_path / submission.report_file_path
+                suffix = source_path.suffix.lower()
 
-            # Handle pdf separately (just copy)
-            report_pdf_file = submission_path / "report.pdf"
-            if report_pdf_file.exists():
-                shutil.copy2(report_pdf_file, student_output_dir / "report.pdf")
-                if verbose:
-                    print(f"    Copied report.pdf")
+                if suffix == ".md":
+                    # Process markdown: rewrite image paths and save as report.md
+                    with open(source_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+
+                    def replace_link(match):
+                        alt = match.group(1)
+                        link = match.group(2)
+                        if link.startswith("http") or link.startswith("/"):
+                            return match.group(0)
+                        if link.startswith("./"):
+                            link = link[2:]
+                        return f"![{alt}](/files/{submission.student_id}/{link})"
+
+                    content = re.sub(r'!\[(.*?)\]\((.*?)\)', replace_link, content)
+                    
+                    with open(student_output_dir / "report.md", "w", encoding="utf-8") as f:
+                        f.write(content)
+                    
+                    if verbose:
+                        print(f"    Processed and verified report.md")
+
+                elif suffix == ".pdf":
+                    # Copy PDF as report.pdf
+                    shutil.copy2(source_path, student_output_dir / "report.pdf")
+                    if verbose:
+                        print(f"    Copied report.pdf")
+                else:
+                    # Copy other types with original name (or standardize if needed)
+                    shutil.copy2(source_path, student_output_dir / "report.txt")
 
             # Copy images (for markdown rendering)
-            for img_ext in ["*.png", "*.jpg", "*.jpeg", "*.gif"]:
-                for img_file in submission_path.glob(img_ext):
-                    shutil.copy2(img_file, student_output_dir / img_file.name)
+            from grader.config import IMAGE_EXTENSIONS
+            for ext in IMAGE_EXTENSIONS:
+                pattern = f"**/*{ext}" if not ext.startswith("*") else f"**/{ext}"
+                for img_file in submission_path.glob(pattern):
+                    # Calculate relative path to support subfolders (e.g. figures/plot.png)
+                    rel_path = img_file.relative_to(submission_path)
+                    dest_path = student_output_dir / rel_path
+                    
+                    # Ensure parent directory exists
+                    dest_path.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    shutil.copy2(img_file, dest_path)
+                    if verbose and img_file.parent != submission_path:
+                         print(f"    Copied image from subfolder: {rel_path}")
+
         except Exception as e:
             print(f"    Warning: Failed to copy report files: {e}")
 
@@ -384,125 +444,28 @@ def main() -> int:
     Returns:
         Exit code (0 for success, 1 for error).
     """
-    parser = argparse.ArgumentParser(
-        description="Grader Pod: Automated homework grading with Docker + LLM",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Grade all submissions
-  python main.py --submissions ./hm3-submissions/ --readme ./README.md
+    arguments = docopt(__doc__)
+    config_path = Path(arguments["--config"])
 
-  # Grade with shared tests
-  python main.py --submissions ./submissions/ --readme ./README.md --tests ./tests/
+    if not config_path.exists():
+        # Try default if not specified explicitly and default exists
+        if config_path.name == "grader_config.yml" and not config_path.exists():
+             print(f"Error: Configuration file not found at {config_path}")
+             return 1
+        elif not config_path.exists():
+             print(f"Error: Configuration file not found at {config_path}")
+             return 1
 
-  # Skip Docker (test LLM only)
-  python main.py --submissions ./submissions/ --readme ./README.md --skip-docker
-
-  # Skip LLM (test Docker only)
-  python main.py --submissions ./submissions/ --readme ./README.md --skip-llm
-""",
-    )
-
-    parser.add_argument(
-        "--config",
-        type=Path,
-        help="Path to YAML configuration file",
-    )
-    parser.add_argument(
-        "--submissions",
-        type=Path,
-        help="Path to directory containing student submission folders",
-    )
-    parser.add_argument(
-        "--readme",
-        type=Path,
-        help="Path to the assignment README.md with rubric",
-    )
-    parser.add_argument(
-        "--tests",
-        type=Path,
-        default=None,
-        help="Path to shared test files to copy into submissions",
-    )
-    parser.add_argument(
-        "--test-data",
-        type=Path,
-        default=None,
-        help="Path to test data folder (e.g., test_folder with ECG data)",
-    )
-    parser.add_argument(
-        "--grades-dir",
-        type=Path,
-        default=None,
-        help="Path to save aggregated grades (default: ./grades)",
-    )
-    parser.add_argument(
-        "--skip-llm",
-        action="store_true",
-        help="Skip LLM grading (for testing execution)",
-    )
-    parser.add_argument(
-        "--only-dashboard",
-        action="store_true",
-        help="Launch dashboard with existing grades (skip grading)",
-    )
-    parser.add_argument(
-        "--dashboard-port",
-        type=int,
-        default=8050,
-        help="Port to run the dashboard on",
-    )
-    parser.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        help="Enable verbose output",
-    )
-
-    args = parser.parse_args()
-
-    # Load configuration from file if provided
-    submissions_dir = args.submissions
-    readme_path = args.readme
-    tests_dir = args.tests
-    test_data_dir = args.test_data
-    grades_dir = args.grades_dir
-    skip_llm = args.skip_llm
-    only_dashboard = args.only_dashboard
-    dashboard_port = args.dashboard_port
-    verbose = args.verbose
-
-    # Default to grader_config.yml if not provided and it exists
-    if not args.config:
-        default_config = Path("grader_config.yml")
-        if default_config.exists():
-            args.config = default_config
-
-    if args.config:
-        try:
-            config = load_config(args.config)
-            print(f"Loaded configuration from {args.config}")
-            
-            # CLI args override config
-            if not submissions_dir: submissions_dir = config.submissions_dir
-            if not readme_path: readme_path = config.readme_path
-            if not tests_dir: tests_dir = config.tests_dir
-            if not test_data_dir: test_data_dir = config.test_data_dir
-            if not grades_dir: grades_dir = config.grades_dir
-            
-            # Boolean flags
-            if not skip_llm: skip_llm = config.skip_llm
-            if not only_dashboard: only_dashboard = config.only_dashboard
-
-            if args.dashboard_port == 8050: dashboard_port = config.dashboard_port
-            if not verbose: verbose = config.verbose
-            
-        except Exception as e:
-            print(f"Error loading config: {e}")
-            return 1
+    try:
+        config = load_config(config_path)
+        print(f"Loaded configuration from {config_path}")
+    except Exception as e:
+        print(f"Error loading config: {e}")
+        return 1
 
     # Check for only_dashboard mode
-    if only_dashboard:
-        grades_dir = grades_dir or DEFAULT_GRADES_DIR
+    if config.only_dashboard:
+        grades_dir = config.grades_dir or DEFAULT_GRADES_DIR
         if not grades_dir.exists():
             print(f"Error: Grades directory not found: {grades_dir}")
             return 1
@@ -517,52 +480,43 @@ Examples:
             import os
             # Only open browser on the main process, not the reloader
             if not os.environ.get("WERKZEUG_RUN_MAIN"):
-                url = f"http://127.0.0.1:{dashboard_port}"
+                url = f"http://127.0.0.1:{config.dashboard_port}"
                 print(f"Opening {url} in browser...")
                 webbrowser.open(url)
             
             app = create_dashboard(grades, grades_dir=grades_dir)
-            app.run(debug=verbose, port=dashboard_port)
+            app.run(debug=config.verbose, port=config.dashboard_port)
             return 0
         except Exception as e:
             print(f"Error launching dashboard: {e}")
             return 1
-    # Validate required arguments
-    if not submissions_dir:
-        print("Error: --submissions argument or specificiation in config file is required")
-        return 1
-    if not readme_path:
-        print("Error: --readme argument or specification in config file is required")
-        return 1
 
-    # Validate paths
-    if not submissions_dir.exists():
-        print(f"Error: Submissions directory not found: {submissions_dir}")
+    # Validate required paths from config
+    if not config.submissions_dir:
+        print("Error: submissions_dir must be specified in the configuration file")
+        return 1
+    if not config.readme_path:
+        print("Error: readme_path must be specified in the configuration file")
         return 1
 
-    if not readme_path.exists():
-        print(f"Error: README not found: {readme_path}")
+    if not config.submissions_dir.exists():
+        print(f"Error: Submissions directory not found: {config.submissions_dir}")
         return 1
 
-    if tests_dir and not tests_dir.exists():
-        print(f"Warning: Tests directory not found: {tests_dir}")
-        print("Proceeding without shared tests (grading based on report/submission only).")
-        tests_dir = None
-
-    if test_data_dir and not test_data_dir.exists():
-        print(f"Warning: Test data directory not found: {test_data_dir}")
-        test_data_dir = None
+    if not config.readme_path.exists():
+        print(f"Error: README not found: {config.readme_path}")
+        return 1
 
     try:
         run_grading_pipeline(
-            submissions_dir=submissions_dir,
-            readme_path=readme_path,
-            tests_dir=tests_dir,
-            test_data_dir=test_data_dir,
-            grades_dir=grades_dir,
-            skip_llm=skip_llm,
-            dashboard_port=dashboard_port,
-            verbose=verbose,
+            submissions_dir=config.submissions_dir,
+            readme_path=config.readme_path,
+            tests_dir=config.tests_dir,
+            test_data_dir=config.test_data_dir,
+            grades_dir=config.grades_dir,
+            skip_llm=config.skip_llm,
+            dashboard_port=config.dashboard_port,
+            verbose=config.verbose,
         )
         return 0
     except KeyboardInterrupt:
@@ -570,11 +524,10 @@ Examples:
         return 1
     except Exception as e:
         print(f"\nError: {e}")
-        if args.verbose:
+        if config.verbose:
             import traceback
             traceback.print_exc()
         return 1
-
 
 if __name__ == "__main__":
     sys.exit(main())

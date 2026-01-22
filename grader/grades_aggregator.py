@@ -121,7 +121,7 @@ class GradesAggregator:
         section_names = [s.section_name for s in self.grades[0].sections]
 
         # Build header
-        header = ["student_id", "total_score", "max_score", "percentage", "tests_passed"]
+        header = ["student_id", "total_score", "max_score", "percentage", "tests_passed", "github_repo"]
         header.extend(section_names)
         header.append("overall_feedback")
 
@@ -136,6 +136,7 @@ class GradesAggregator:
                     grade.max_score,
                     f"{(grade.total_score / grade.max_score * 100):.1f}%" if grade.max_score > 0 else "0%",
                     "Yes" if grade.code_execution_passed else "No",
+                    grade.github_repo or "",
                 ]
                 # Add section scores
                 for section in grade.sections:

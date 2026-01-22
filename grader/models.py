@@ -146,6 +146,8 @@ class GradeResult(BaseModel):
     overall_feedback: str = Field(
         ..., description="Constructive summary feedback for the student"
     )
+    github_repo: str | None = Field(default=None, description="GitHub repository owner/name")
+    submission_path: str | None = Field(default=None, description="Path to the original submission directory")
 
 
 class StudentSubmission(BaseModel):
@@ -165,6 +167,8 @@ class StudentSubmission(BaseModel):
     has_answers_file: bool = Field(..., description="Whether answers.py exists")
     has_report_file: bool = Field(..., description="Whether report.md exists")
     report_content: str = Field(default="", description="Content of report.md")
+    report_file_path: str | None = Field(default=None, description="Relative path to report file")
+    github_repo: str | None = Field(default=None, description="GitHub repository owner/name")
     figure_descriptions: list[ImageDescription] = Field(
         default_factory=list, description="Semantic descriptions of images in report"
     )

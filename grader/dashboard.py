@@ -26,8 +26,9 @@ def create_dashboard(grades: list[GradeResult], grades_dir: Path | None = None):
         import pandas as pd
         import plotly.express as px
         import plotly.graph_objects as go
-        from dash import Dash, dash_table, dcc, html
-        from dash.dependencies import Input, Output
+        from dash import Dash, dash_table, dcc, html, ALL
+        from dash.dependencies import Input, Output, State
+        from .config import GRADE_OUTPUT_FILENAME
     except ImportError:
         print("Dashboard requires additional dependencies. Install with:")
         print("  uv pip install dash pandas plotly")
@@ -57,7 +58,11 @@ def create_dashboard(grades: list[GradeResult], grades_dir: Path | None = None):
     section_cols = [s.section_name for s in grades[0].sections] if grades else []
 
     # Create Dash app
-    app = Dash(__name__)
+    # Note: Dash's mathjax=True currently works best with MathJax v2 (MathJax.Hub)
+    external_scripts = [
+        "https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.7/MathJax.js?config=TeX-MML-AM_CHTML"
+    ]
+    app = Dash(__name__, suppress_callback_exceptions=True, external_scripts=external_scripts)
     
     # Add route to serve local files (images, reports)
     @app.server.route("/files/<path:path>")
@@ -196,15 +201,32 @@ def create_dashboard(grades: list[GradeResult], grades_dir: Path | None = None):
             ),
         ], style={"padding": "20px", "backgroundColor": "white", "margin": "20px", "borderRadius": "8px", "boxShadow": "0 2px 4px rgba(0,0,0,0.1)"}),
 
-        # Feedback section
+        # Student Feedback section
         html.Div([
-            html.H3("Student Feedback", style={"color": "#2c3e50", "marginBottom": "10px"}),
+            html.Div([
+                html.H3("Student Feedback", style={"color": "#2c3e50", "margin": "0"}),
+                html.Button(
+                    "Submit All Grades to GitHub",
+                    id="submit-grades-btn",
+                    style={
+                        "backgroundColor": "#2ecc71",
+                        "color": "white",
+                        "border": "none",
+                        "padding": "10px 20px",
+                        "borderRadius": "5px",
+                        "cursor": "pointer",
+                        "fontWeight": "bold",
+                        "marginLeft": "20px"
+                    }
+                ),
+            ], style={"display": "flex", "alignItems": "center", "marginBottom": "10px"}),
             dcc.Dropdown(
                 id="student-dropdown",
                 options=[{"label": g.student_id.replace("hm3-ecg-data-analysis-", ""), "value": g.student_id} for g in grades],
                 value=grades[0].student_id if grades else None,
                 style={"marginBottom": "10px"},
             ),
+            html.Div(id="submit-status", style={"marginBottom": "10px"}),
             html.Div(id="feedback-content"),
         ], style={"padding": "20px", "backgroundColor": "white", "margin": "20px", "borderRadius": "8px", "boxShadow": "0 2px 4px rgba(0,0,0,0.1)"}),
         
@@ -229,16 +251,53 @@ def create_dashboard(grades: list[GradeResult], grades_dir: Path | None = None):
 
         # Render feedback
         feedback_content = html.Div([
-            html.H4(f"Overall: {grade.total_score}/{grade.max_score} ({grade.total_score/grade.max_score*100:.1f}%)" if grade.max_score > 0 else "N/A"),
-            html.P(grade.overall_feedback, style={"backgroundColor": "#f8f9fa", "padding": "15px", "borderRadius": "5px", "borderLeft": "4px solid #3498db"}),
-            html.H5("Section Details:", style={"marginTop": "15px"}),
+            html.Div([
+                html.H4(f"Overall Feedback: {grade.total_score:.1f}/{grade.max_score:.1f} ({grade.total_score/grade.max_score*100:.1f}%)" if grade.max_score > 0 else "N/A", style={"margin": "0"}),
+                html.Button(
+                    "Save Changes",
+                    id="save-grades-btn",
+                    style={
+                        "backgroundColor": "#3498db",
+                        "color": "white",
+                        "border": "none",
+                        "padding": "8px 15px",
+                        "borderRadius": "5px",
+                        "cursor": "pointer"
+                    }
+                ),
+            ], style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "marginBottom": "10px"}),
+            
+            dcc.Textarea(
+                id="overall-feedback-input",
+                value=grade.overall_feedback,
+                style={"width": "100%", "height": "100px", "padding": "10px", "borderRadius": "5px", "border": "1px solid #ddd"}
+            ),
+            
+            html.H5("Section Details:", style={"marginTop": "20px"}),
             html.Div([
                 html.Div([
-                    html.Strong(f"{s.section_name}: {s.points_earned}/{s.max_points}"),
-                    html.P(s.feedback, style={"marginLeft": "15px", "color": "#555", "fontSize": "13px"}),
-                ], style={"marginBottom": "10px", "paddingBottom": "10px", "borderBottom": "1px solid #eee"})
-                for s in grade.sections
+                    html.Div([
+                        html.Strong(f"{s.section_name}: "),
+                        dcc.Input(
+                            id={'type': 'section-points', 'index': i},
+                            type='number',
+                            value=s.points_earned,
+                            max=s.max_points,
+                            min=0,
+                            step=0.1,
+                            style={"width": "70px", "marginLeft": "5px", "padding": "5px"}
+                        ),
+                        html.Span(f" / {s.max_points}")
+                    ], style={"marginBottom": "10px"}),
+                    dcc.Textarea(
+                        id={'type': 'section-feedback', 'index': i},
+                        value=s.feedback,
+                        style={"width": "100%", "height": "60px", "padding": "10px", "borderRadius": "5px", "border": "1px solid #ddd"}
+                    ),
+                ], style={"marginBottom": "15px", "padding": "15px", "backgroundColor": "#fcfcfc", "borderRadius": "8px", "border": "1px solid #eee"})
+                for i, s in enumerate(grade.sections)
             ]),
+            html.Div(id="save-status", style={"marginTop": "10px", "fontWeight": "bold"})
         ])
         
         # Render report if available
@@ -249,13 +308,127 @@ def create_dashboard(grades: list[GradeResult], grades_dir: Path | None = None):
         if report_path.exists():
             with open(report_path, "r") as f:
                 md_text = f.read()
+            
+            # Simple but effective escaping for MathJax inside Markdown
+            # We replace \\ with \\\\ to survive the Markdown -> HTML conversion
+            # and ensure LaTeX environments like bmatrix work correctly.
+            import re
+            
+            def escape_math(match):
+                # Double the backslashes inside math blocks
+                return match.group(0).replace("\\", "\\\\")
+
+            # Escape display math: $$ ... $$
+            md_text = re.sub(r'(\$\$.*?\$\$)', escape_math, md_text, flags=re.DOTALL)
+            # Escape inline math: $ ... $ (avoiding double escaping if already done by display math)
+            # This regex avoids matching display math blocks
+            md_text = re.sub(r'(?<!\$)\$([^\$]+?)\$(?!\$)', escape_math, md_text)
 
             report_content_div = [
                 html.H3("Student Report", style={"color": "#2c3e50", "marginBottom": "10px"}),
-                dcc.Markdown(md_text, style={"padding": "20px", "border": "1px solid #eee", "borderRadius": "5px"}),
+                dcc.Markdown(md_text, mathjax=True, style={"padding": "20px", "border": "1px solid #eee", "borderRadius": "5px"}),
             ]
         
         return feedback_content, report_content_div
+
+    # Callback for submitting grades
+    @app.callback(
+        Output("submit-status", "children"),
+        Input("submit-grades-btn", "n_clicks"),
+        prevent_initial_call=True
+    )
+    def submit_grades(n_clicks):
+        if not n_clicks:
+            return ""
+
+        import subprocess
+        results = []
+        for grade in grades:
+            if not grade.github_repo:
+                results.append(html.P(f"⚠️ {grade.student_id}: No GitHub repository found.", style={"color": "#e67e22"}))
+                continue
+
+            try:
+                # Create issue title and body
+                title = f"Grade: {grade.total_score:.1f}/{grade.max_score:.1f}"
+                body = f"## Overall Feedback\n\n{grade.overall_feedback}\n\n"
+                body += "### Section Details\n\n"
+                for section in grade.sections:
+                    body += f"- **{section.section_name}**: {section.points_earned:.1f}/{section.max_points:.1f}\n"
+                    body += f"  {section.feedback}\n\n"
+
+                # Run gh issue create
+                cmd = [
+                    "gh", "issue", "create",
+                    "--repo", grade.github_repo,
+                    "--title", title,
+                    "--body", body
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+                if result.returncode == 0:
+                    results.append(html.P(f"✅ {grade.student_id}: Grade submitted to {grade.github_repo}", style={"color": "#27ae60"}))
+                else:
+                    results.append(html.P(f"❌ {grade.student_id}: Failed to submit to {grade.github_repo}. Error: {result.stderr}", style={"color": "#e74c3c"}))
+            except Exception as e:
+                results.append(html.P(f"❌ {grade.student_id}: Unexpected error: {str(e)}", style={"color": "#e74c3c"}))
+
+        return html.Div([
+            html.H4("Submission Status:"),
+            html.Div(results, style={"maxHeight": "200px", "overflowY": "auto", "padding": "10px", "backgroundColor": "#f8f9fa", "borderRadius": "5px"})
+        ])
+
+    # Callback for saving changes
+    @app.callback(
+        Output("save-status", "children"),
+        Input("save-grades-btn", "n_clicks"),
+        [State("student-dropdown", "value"),
+         State("overall-feedback-input", "value"),
+         State({'type': 'section-points', 'index': ALL}, 'value'),
+         State({'type': 'section-feedback', 'index': ALL}, 'value')],
+        prevent_initial_call=True
+    )
+    def save_changes(n_clicks, student_id, overall_feedback, section_points, section_feedbacks):
+        if not n_clicks:
+            return ""
+
+        grade = next((g for g in grades if g.student_id == student_id), None)
+        if not grade:
+            return html.Span("❌ Error: Grade not found", style={"color": "#e74c3c"})
+
+        # Update in-memory object
+        grade.overall_feedback = overall_feedback
+        for i, s in enumerate(grade.sections):
+            if i < len(section_points):
+                s.points_earned = section_points[i]
+            if i < len(section_feedbacks):
+                s.feedback = section_feedbacks[i]
+        
+        # Recalculate total score
+        grade.total_score = sum(s.points_earned for s in grade.sections)
+
+        # Persistence
+        try:
+            # 1. Update individual JSON in grades_dir
+            individual_path = grades_dir / f"{grade.student_id}.json"
+            with open(individual_path, "w", encoding="utf-8") as f:
+                f.write(grade.model_dump_json(indent=2))
+            
+            # 2. Update original grade.json if submission_path is available
+            if grade.submission_path:
+                original_path = Path(grade.submission_path) / GRADE_OUTPUT_FILENAME
+                with open(original_path, "w", encoding="utf-8") as f:
+                    f.write(grade.model_dump_json(indent=2))
+
+            # 3. Update summary files
+            from .grades_aggregator import GradesAggregator
+            aggregator = GradesAggregator(output_dir=grades_dir)
+            aggregator.grades = grades
+            aggregator.save_all()
+
+            return html.Span("✅ Changes saved to disk and updated in memory.", style={"color": "#27ae60"})
+        except Exception as e:
+            return html.Span(f"❌ Error saving: {str(e)}", style={"color": "#e74c3c"})
 
     return app
 

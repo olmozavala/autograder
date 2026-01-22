@@ -3,9 +3,10 @@
 
 # Base paths
 # source_path used as root for readme, tests, and test_data
-# source_path: "hm3_source"
+# source_path: "Test_Sources"
 # source_path: "/home/olmozavala/Dropbox/MyCourses/FSU/ISC_4933_5935_DataScience_meets_HealthSciences/Homeworks/Template_Lab01_GithubBasics"
-source_path: "/home/olmozavala/Dropbox/MyCourses/FSU/ISC_4933_5935_DataScience_meets_HealthSciences/Homeworks/Template_Lab02_PythonOverview"
+# source_path: "/home/olmozavala/Dropbox/MyCourses/FSU/ISC_4933_5935_DataScience_meets_HealthSciences/Homeworks/Template_Lab02_PythonOverview"
+source_path: "/home/olmozavala/Dropbox/MyCourses/FSU/ISC_4933_5935_DataScience_meets_HealthSciences/Homeworks/AUTO_GRADER/Test_Sources/Template_Lab02_PythonOverview"
 
 # Dependent paths (relative to source_path)
 readme_path: "README.md"
@@ -13,12 +14,11 @@ tests_dir: "tests"
 test_data_dir: "test_folder"
 
 # Root-relative paths 
-submissions_dir: "/home/olmozavala/Dropbox/MyCourses/FSU/ISC_4933_5935_DataScience_meets_HealthSciences/SEMESTERS/Spring_2026/StudentHomerworks/lab-02-python-overview-submissions"
-grades_dir: "/home/olmozavala/Dropbox/MyCourses/FSU/ISC_4933_5935_DataScience_meets_HealthSciences/SEMESTERS/Spring_2026/StudentHomerworks/lab-02-python-overview-submissions/GRADES"
+submissions_dir: "/home/olmozavala/Dropbox/MyCourses/FSU/ISC_4933_5935_DataScience_meets_HealthSciences/Homeworks/AUTO_GRADER/Test_Submissions/Lab02_Python"
+grades_dir: "/home/olmozavala/Dropbox/MyCourses/FSU/ISC_4933_5935_DataScience_meets_HealthSciences/Homeworks/AUTO_GRADER/Test_Submissions/Lab02_Python/GRADES"
 
 # Execution flags
-skip_llm: false # Default to skipping LLM for local testing
-only_dashboard: true # Launch dashboard with existing grades (skip grading)
+only_dashboard: false # Launch dashboard with existing grades (skip grading)
 verbose: true
 
 # Dashboard settings
