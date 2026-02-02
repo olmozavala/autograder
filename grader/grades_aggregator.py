@@ -58,6 +58,9 @@ class GradesAggregator:
 
         output_files: dict[str, Path] = {}
 
+        # Sort grades by github_repo (handle None)
+        self.grades.sort(key=lambda x: (x.github_repo or "", x.student_id))
+
         # Save individual JSON files
         for grade in self.grades:
             individual_path = self.output_dir / f"{grade.student_id}.json"
@@ -164,6 +167,8 @@ def load_grades_from_dir(grades_dir: Path) -> list[GradeResult]:
             data = json.load(f)
             for grade_data in data.get("grades", []):
                 grades.append(GradeResult(**grade_data))
+        # Sort by github_repo before returning
+        grades.sort(key=lambda x: (x.github_repo or "", x.student_id))
         return grades
 
     # Fall back to individual files
@@ -177,5 +182,7 @@ def load_grades_from_dir(grades_dir: Path) -> list[GradeResult]:
         except Exception:
             pass
 
+    # Sort by github_repo before returning
+    grades.sort(key=lambda x: (x.github_repo or "", x.student_id))
     return grades
 

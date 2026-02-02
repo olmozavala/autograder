@@ -6,6 +6,7 @@ to provide comprehensive grading with structured output.
 """
 
 import base64
+import netrc
 import os
 from pathlib import Path
 
@@ -36,12 +37,24 @@ class LLMGrader:
             ValueError: If no API key is provided or found in environment.
         """
         self.model = model
+
+        # Priority: 1. Argument, 2. .netrc (machine OPENAI), 3. Environment variable
+        if api_key is None:
+            # Try to read from .netrc
+            try:
+                secrets = netrc.netrc()
+                auth = secrets.authenticators("OPENAI")
+                if auth:
+                    api_key = auth[0]  # auth[0] is the login info
+            except (FileNotFoundError, netrc.NetrcParseError, Exception):
+                pass
+
         api_key = api_key or os.environ.get("OPENAI_API_KEY")
 
         if not api_key:
             raise ValueError(
-                "OpenAI API key required. Set OPENAI_API_KEY environment variable "
-                "or pass api_key parameter."
+                "OpenAI API key required. Set OPENAI_API_KEY environment variable, "
+                "add machine OPENAI to your .netrc file, or pass api_key parameter."
             )
 
         self.client = OpenAI(api_key=api_key)

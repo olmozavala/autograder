@@ -47,7 +47,7 @@ def find_submissions(submissions_dir: Path) -> list[StudentSubmission]:
             continue
 
         # Skip hidden directories and common non-submission dirs
-        if item.name.startswith(".") or item.name in ("__pycache__", "tests"):
+        if item.name.startswith(".") or item.name in ("__pycache__", "tests", "GRADES", "grades"):
             continue
 
         answers_path = item / ANSWERS_FILENAME
@@ -61,8 +61,8 @@ def find_submissions(submissions_dir: Path) -> list[StudentSubmission]:
             report_path = item / REPORT_FILENAME
             report_file_name = REPORT_FILENAME
         else:
-            # Look for any file with "report" in the name (case-insensitive)
-            candidates = [f for f in item.iterdir() if f.is_file() and "report" in f.name.lower()]
+            # Look for any file with "report" in the name (case-insensitive) but NOT "example"
+            candidates = [f for f in item.iterdir() if f.is_file() and "report" in f.name.lower() and "example" not in f.name.lower()]
             # Prioritize markdown files
             md_candidates = [f for f in candidates if f.suffix.lower() == ".md"]
             if md_candidates:
@@ -247,21 +247,22 @@ def run_grading_pipeline(
 
         submission_path = Path(submission.submission_path)
 
+        # Prepare execution result
+        from grader.models import ExecutionResult
+        execution_result = None
+
         # Check for required files
         if not submission.has_answers_file:
-            print(f"  Warning: {ANSWERS_FILENAME} not found, skipping...")
-            continue
+            print(f"  Warning: {ANSWERS_FILENAME} not found for student '{submission.student_id}'. Proceeding with report-only grading.")
+            execution_result = ExecutionResult(
+                success=False,
+                setup_log=f"Error: Required file {ANSWERS_FILENAME} is missing.",
+                test_log=f"Deterministic tests could not be run because {ANSWERS_FILENAME} was not found in the submission directory.",
+                exit_code=1,
+            )
 
-        # Run Docker tests
-        from grader.models import ExecutionResult
-        execution_result = ExecutionResult(
-            success=True,
-            setup_log="Docker execution skipped",
-            test_log="",
-            exit_code=0,
-        )
-
-        if runner:
+        # Run tests if answers file exists and runner is available
+        if submission.has_answers_file and runner:
             print("  Running tests...")
             execution_result = runner.run_submission(submission_path)
 
@@ -275,6 +276,15 @@ def run_grading_pipeline(
                 for line in execution_result.test_log.split("\n")[:20]:
                     print(f"  {line}")
                 print("  ----------------")
+        
+        # Ensure execution_result is never None
+        if execution_result is None:
+            execution_result = ExecutionResult(
+                success=True,
+                setup_log="Execution skipped (no runner or file check bypassed)",
+                test_log="",
+                exit_code=0,
+            )
 
         # LLM grading
         if llm_grader and not skip_llm:
@@ -397,6 +407,9 @@ def run_grading_pipeline(
         aggregator.add_grade(grade)
         print_grade_summary(grade)
         results.append(grade)
+
+    # Sort results by github_repo
+    results.sort(key=lambda x: (x.github_repo or "", x.student_id))
 
     # Save aggregated grades
     if results:
