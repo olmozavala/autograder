@@ -20,6 +20,14 @@ import re
 import subprocess
 from pathlib import Path
 
+# NumPy 2.0 compatibility shim
+try:
+    import numpy as np
+    if not hasattr(np, "unicode_"):
+        np.unicode_ = np.str_
+except ImportError:
+    pass
+
 from grader.config import ANSWERS_FILENAME, DEFAULT_GRADES_DIR, GRADE_OUTPUT_FILENAME, REPORT_FILENAME
 from grader.config_loader import load_config
 from grader.dashboard import create_dashboard
@@ -183,6 +191,9 @@ def run_grading_pipeline(
     test_data_dir: Path | None = None,
     grades_dir: Path | None = None,
     skip_llm: bool = False,
+    llm_model: str = "gpt-5-nano",
+    max_tokens: int = 4096,
+    openai_api_key: str | None = None,
     dashboard_port: int = 8050,
     verbose: bool = False,
 ) -> list[GradeResult]:
@@ -230,7 +241,8 @@ def run_grading_pipeline(
     if not skip_llm:
         print("Initializing LLM grader...")
         try:
-            llm_grader = LLMGrader()
+            llm_grader = LLMGrader(model=llm_model, max_tokens=max_tokens, api_key=openai_api_key)
+            print(f"  Using model: {llm_model} (max_tokens={max_tokens})")
         except ValueError as e:
             print(f"Warning: {e}")
             print("LLM grading will be skipped.")
@@ -308,6 +320,27 @@ def run_grading_pipeline(
                         else:
                             print(f"    Warning: Image file not found: {img_path_str}")
 
+            # Collect Python source files for code review
+            source_code = {}
+            skip_dirs = {"tests", "__pycache__", ".git", ".ipynb_checkpoints"}
+            skip_files = {ANSWERS_FILENAME, "grade.json"}
+            for py_file in sorted(submission_path.rglob("*.py")):
+                # Skip files in excluded directories
+                if any(part in skip_dirs for part in py_file.parts):
+                    continue
+                # Skip known non-student files
+                if py_file.name in skip_files:
+                    continue
+                try:
+                    content = py_file.read_text(encoding="utf-8")
+                    rel_path = py_file.relative_to(submission_path)
+                    source_code[str(rel_path)] = content
+                except Exception:
+                    pass
+
+            if source_code:
+                print(f"  Collected {len(source_code)} Python source file(s) for code review")
+
             print("  Grading with LLM...")
             grade = llm_grader.grade_submission(
                 student_id=submission.student_id,
@@ -315,6 +348,7 @@ def run_grading_pipeline(
                 execution_result=execution_result,
                 report_content=submission.report_content,
                 figure_descriptions=figure_descriptions,
+                source_code=source_code if source_code else None,
             )
             # Propagate github_repo and submission_path from submission
             grade.github_repo = submission.github_repo
@@ -502,6 +536,8 @@ def main() -> int:
             return 0
         except Exception as e:
             print(f"Error launching dashboard: {e}")
+            import traceback
+            traceback.print_exc()
             return 1
 
     # Validate required paths from config
@@ -528,6 +564,9 @@ def main() -> int:
             test_data_dir=config.test_data_dir,
             grades_dir=config.grades_dir,
             skip_llm=config.skip_llm,
+            llm_model=config.llm_model,
+            max_tokens=config.max_tokens,
+            openai_api_key=config.openai_api_key,
             dashboard_port=config.dashboard_port,
             verbose=config.verbose,
         )

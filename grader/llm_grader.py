@@ -10,9 +10,9 @@ import netrc
 import os
 from pathlib import Path
 
-from openai import OpenAI
+import time
+from openai import OpenAI, RateLimitError, LengthFinishReasonError
 
-from .config import MAX_TOKENS, OPENAI_MODEL
 from .models import ExecutionResult, GradeResult, ImageDescription, Rubric, SectionGrade
 from .rubric_parser import format_rubric_for_llm
 
@@ -25,7 +25,7 @@ class LLMGrader:
     to produce comprehensive grades with detailed feedback.
     """
 
-    def __init__(self, model: str = OPENAI_MODEL, api_key: str | None = None) -> None:
+    def __init__(self, model: str, max_tokens: int = 4096, api_key: str | None = None) -> None:
         """
         Initialize the LLM grader.
 
@@ -37,15 +37,26 @@ class LLMGrader:
             ValueError: If no API key is provided or found in environment.
         """
         self.model = model
+        self.max_tokens = max_tokens
 
         # Priority: 1. Argument, 2. .netrc (machine OPENAI), 3. Environment variable
         if api_key is None:
             # Try to read from .netrc
             try:
                 secrets = netrc.netrc()
-                auth = secrets.authenticators("OPENAI")
-                if auth:
-                    api_key = auth[0]  # auth[0] is the login info
+                # Try common machine names for OpenAI
+                for machine in ["OPENAI", "OPENAI_API_KEY", "api.openai.com"]:
+                    auth = secrets.authenticators(machine)
+                    if auth:
+                        # Check password first (common for sk- keys), then login
+                        if auth[2] and auth[2].startswith("sk-"):
+                            api_key = auth[2]
+                        elif auth[0] and auth[0].startswith("sk-"):
+                            api_key = auth[0]
+                        else:
+                            # Fallback to login if neither starts with sk-
+                            api_key = auth[0]
+                        break
             except (FileNotFoundError, netrc.NetrcParseError, Exception):
                 pass
 
@@ -66,48 +77,70 @@ class LLMGrader:
         execution_result: ExecutionResult,
         report_content: str,
         figure_descriptions: list[ImageDescription] | None = None,
+        source_code: dict[str, str] | None = None,
     ) -> GradeResult:
         """
         Grade a student submission using GPT-4o.
 
         Analyzes the report for scientific correctness and correlates
-        with deterministic test results.
+        with deterministic test results. When no tests are available,
+        evaluates the student's source code directly.
 
         Args:
             student_id: Student identifier (folder name).
             rubric: Parsed assignment rubric.
             execution_result: Results from pytest execution.
             report_content: Content of student's report.md.
+            figure_descriptions: Optional list of image descriptions.
+            source_code: Optional dict mapping filename -> content for Python source files.
 
         Returns:
             GradeResult with per-section scores and feedback.
         """
-        prompt = self._build_prompt(rubric, execution_result, report_content, figure_descriptions)
+        prompt = self._build_prompt(rubric, execution_result, report_content, figure_descriptions, source_code)
+
+        max_retries = 3
+        retry_delay = 1
+        
+        for attempt in range(max_retries):
+            try:
+                completion = self.client.beta.chat.completions.parse(
+                    model=self.model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": self._get_system_prompt(),
+                        },
+                        {
+                            "role": "user",
+                            "content": prompt,
+                        },
+                    ],
+                    response_format=GradeResult,
+                    max_completion_tokens=self.max_tokens,
+                )
+                break
+            except RateLimitError as e:
+                if attempt < max_retries - 1:
+                    print(f"    Rate limit hit, retrying in {retry_delay}s... ({e})")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    raise
+            except LengthFinishReasonError as e:
+                print(f"    Error: Could not parse response content as the length limit was reached - {e.completion.usage}")
+                return self._create_fallback_result(student_id, rubric, execution_result)
+        else:
+            return self._create_fallback_result(student_id, rubric, execution_result)
+
+        result = completion.choices[0].message.parsed
+        if result is None:
+            return self._create_fallback_result(student_id, rubric, execution_result)
+
+        # Ensure student_id is set correctly
+        result.student_id = student_id
 
         try:
-            completion = self.client.beta.chat.completions.parse(
-                model=self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": self._get_system_prompt(),
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    },
-                ],
-                response_format=GradeResult,
-                max_completion_tokens=MAX_TOKENS,
-            )
-
-            result = completion.choices[0].message.parsed
-            if result is None:
-                return self._create_fallback_result(student_id, rubric, execution_result)
-
-            # Ensure student_id is set correctly
-            result.student_id = student_id
-
             # Enforce rubric section names and max points
             llm_sections = {s.section_name: s for s in result.sections}
             new_sections = []
@@ -172,9 +205,12 @@ class LLMGrader:
 Your role is to:
 1. Evaluate student submissions against the provided rubric
 2. Correlate code execution results with report quality
-3. Provide constructive, specific feedback
+3. When source code is provided, review it for correctness, completeness, and coding quality
+4. Provide constructive, specific feedback
 
 CRITICAL GRADING RULES:
+
+## When Deterministic Tests Are Available:
 
 1. **TEST FAILURES = NEAR-ZERO CREDIT**
    - If pytest tests FAILED for a section, give at most 1-2 points out of 10
@@ -188,17 +224,39 @@ CRITICAL GRADING RULES:
      * Understanding of WHY the code works, not just THAT it works
    - Penalize 20-40% if tests pass but explanation is missing or superficial
 
+## When No Tests Are Available (Code Review Mode):
+
+If no deterministic tests were run (e.g., answers.py is missing), grade based on:
+1. **Source code quality** – Does the code implement what the rubric asks for?
+   - Check for correct function signatures, logic, and completeness
+   - Look for proper use of libraries (PyTorch, NumPy, etc.)
+   - Verify the code would produce correct results if run
+2. **Report quality** – Does the report explain the approach and show results?
+   - Are figures/plots included that demonstrate the code was run?
+   - Does the student show understanding of the concepts?
+3. **DO NOT penalize students simply for missing answers.py** – many assignments
+   don't require it. Focus on the actual Python files and report instead.
+
+## General Rules:
+
 3. **REPORT MUST SHOW VERIFICATION**
    - Student must show they ran their code and checked the outputs
    - Include example outputs, screenshots, or result summaries
    - Simply showing code without demonstrating it works = significant penalty
 
-Grading Scale:
+Grading Scale (with tests):
 - 10/10: Tests pass AND excellent explanation with verified results
 - 7-9/10: Tests pass AND good explanation, minor gaps in verification
 - 4-6/10: Tests pass BUT weak/missing explanation or no result verification
 - 1-3/10: Tests FAILED but shows some conceptual understanding
 - 0/10: Tests failed AND no meaningful attempt or explanation
+
+Grading Scale (without tests, code review mode):
+- 10/10: Code is correct and complete, report is excellent with verified results
+- 7-9/10: Code looks correct, report is good with results shown
+- 4-6/10: Code has issues or is incomplete, but shows understanding
+- 1-3/10: Minimal code or major errors, weak report
+- 0/10: No meaningful attempt
 
 Additional Guidelines:
 - Extra credit sections: only award points if attempted AND done well
@@ -211,6 +269,7 @@ Additional Guidelines:
         execution_result: ExecutionResult,
         report_content: str,
         figure_descriptions: list[ImageDescription] | None = None,
+        source_code: dict[str, str] | None = None,
     ) -> str:
         """
         Build the grading prompt for the LLM.
@@ -266,6 +325,9 @@ Additional Guidelines:
 ## Figure Descriptions (from student images):
 {self._format_figure_descriptions(figure_descriptions) if figure_descriptions else "No images found in report or analyzed."}
 
+## Student Source Code (Python files):
+{self._format_source_code(source_code) if source_code else "No source code files provided."}
+
 ## Instructions
 
 Grade this submission according to the rubric above. For each section ({sections_list}), provide:
@@ -273,7 +335,8 @@ Grade this submission according to the rubric above. For each section ({sections
 2. Specific feedback explaining the grade
 
 Consider:
-- Did the code tests pass or fail? This is ground truth for code correctness.
+- Did the code tests pass or fail? If tests were run, this is ground truth for code correctness.
+- If NO tests were run, review the source code directly for correctness and completeness.
 - Does the report demonstrate understanding of the concepts?
 - Is the report complete and well-written?
 - For visualization sections, note if images are present/referenced in the report
@@ -330,6 +393,31 @@ Provide overall feedback that is constructive and helps the student improve.
             lines.append("")
         return "\n".join(lines)
 
+    def _format_source_code(self, source_code: dict[str, str]) -> str:
+        """Format student source code files for the prompt.
+        
+        Each file is truncated to keep the prompt within token limits.
+
+        Args:
+            source_code: Dict mapping filename -> file content.
+
+        Returns:
+            Formatted source code string for the prompt.
+        """
+        if not source_code:
+            return "No source code files provided."
+
+        max_chars_per_file = 3000
+        lines = []
+        for filename, content in sorted(source_code.items()):
+            truncated = content[:max_chars_per_file]
+            if len(content) > max_chars_per_file:
+                truncated += f"\n... [truncated, {len(content)} chars total]"
+            lines.append(f"### {filename}")
+            lines.append(f"```python\n{truncated}\n```")
+            lines.append("")
+        return "\n".join(lines)
+
     def describe_image(self, image_path: Path, caption: str = "") -> ImageDescription:
         """
         Use OpenAI Vision to describe an image.
@@ -345,26 +433,45 @@ Provide overall feedback that is constructive and helps the student improve.
             with open(image_path, "rb") as image_file:
                 base64_image = base64.b64encode(image_file.read()).decode("utf-8")
 
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",  # Use vision-capable model
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a scientific assistant. Describe the provided image concisely, focusing on content, data shown, and any labels or titles visible. Your description will be used for grading an academic assignment.",
-                    },
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": f"Please describe this image. It has the following caption: {caption}" if caption else "Please describe this image."},
+            max_retries = 5
+            retry_delay = 1
+
+            for attempt in range(max_retries):
+                try:
+                    response = self.client.chat.completions.create(
+                        model="gpt-4o-mini",  # Use vision-capable model
+                        messages=[
                             {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"},
+                                "role": "system",
+                                "content": "You are a scientific assistant. Describe the provided image concisely, focusing on content, data shown, and any labels or titles visible. Your description will be used for grading an academic assignment.",
+                            },
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": f"Please describe this image. It has the following caption: {caption}" if caption else "Please describe this image."},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"},
+                                    },
+                                ],
                             },
                         ],
-                    },
-                ],
-                max_tokens=500,
-            )
+                        max_tokens=500,
+                    )
+                    break
+                except RateLimitError as e:
+                    if attempt < max_retries - 1:
+                        # print(f"    Rate limit hit for image, retrying in {retry_delay}s...")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                    else:
+                        raise
+            else:
+                return ImageDescription(
+                    filename=image_path.name,
+                    caption=caption,
+                    description="Failed to generate description after retries."
+                )
 
             description = response.choices[0].message.content
             return ImageDescription(

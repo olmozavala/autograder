@@ -4,8 +4,6 @@ Configuration constants for the Grader Pod system.
 
 from pathlib import Path
 
-
-
 # Execution configuration
 EXECUTION_TIMEOUT_SECONDS: int = 120
 
@@ -27,11 +25,7 @@ PYTEST_ARGS: list[str] = [
     "--tb=short",
 ]
 
-# OpenAI configuration
-# Available models: "gpt-4o", "gpt-4o-mini", "o1-mini", "o3-mini"
-# gpt-4o-mini is the most cost-effective for grading tasks
-OPENAI_MODEL: str = "gpt-4o-mini"
-MAX_TOKENS: int = 4096
+
 
 # Default paths (can be overridden via CLI)
 DEFAULT_TESTS_DIR: Path = Path("tests")
@@ -43,4 +37,3 @@ GRADES_CSV_FILENAME: str = "grades_summary.csv"
 # Matches: "# Section Name (10 pts)" or "# Section Name (Extra 10 pts)"
 SECTION_PATTERN: str = r"^#+\s+(.+?)\s*\((?:Extra\s+)?(\d+)\s*(?:pts|points)?\s*\)"
 EXTRA_CREDIT_KEYWORDS: list[str] = ["extra", "bonus", "optional"]
-

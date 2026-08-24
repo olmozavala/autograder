@@ -4,8 +4,7 @@
 # Base paths
 # source_path used as root for readme, tests, and test_data
 # source_path: "Test_Sources"
-# source_path: "/home/olmozavala/Dropbox/MyCourses/FSU/ISC_4933_5935_DataScience_meets_HealthSciences/Homeworks/Template_Lab01_GithubBasics"
-source_path: "/home/olmozavala/Dropbox/MyCourses/FSU/ISC_4933_5935_DataScience_meets_HealthSciences/Homeworks/Template_Lab02_PythonOverview"
+source_path: "/home/olmozavala/Dropbox/MyCourses/FSU/ISC_4933_5935_DataScience_meets_HealthSciences/Homeworks/Template_Lab06_NN_Testbed"
 
 # Dependent paths (relative to source_path)
 readme_path: "README.md"
@@ -13,8 +12,8 @@ tests_dir: "tests"
 test_data_dir: "test_folder"
 
 # Root-relative paths 
-submissions_dir: "/home/olmozavala/Dropbox/MyCourses/FSU/ISC_4933_5935_DataScience_meets_HealthSciences/SEMESTERS/Spring_2026/StudentHomerworks/lab-02-python-overview-submissions"
-grades_dir: "/home/olmozavala/Dropbox/MyCourses/FSU/ISC_4933_5935_DataScience_meets_HealthSciences/SEMESTERS/Spring_2026/StudentHomerworks/lab-02-python-overview-submissions/GRADES"
+submissions_dir: "/home/olmozavala/Dropbox/MyCourses/FSU/ISC_4933_5935_DataScience_meets_HealthSciences/SEMESTERS/Spring_2026/StudentHomerworks/lab-06-nn-testbed-submissions"
+grades_dir:      "/home/olmozavala/Dropbox/MyCourses/FSU/ISC_4933_5935_DataScience_meets_HealthSciences/SEMESTERS/Spring_2026/StudentHomerworks/lab-06-nn-testbed-submissions/GRADES"
 
 # Execution flags
 only_dashboard: false # Launch dashboard with existing grades (skip grading)
@@ -22,3 +21,22 @@ verbose: true
 
 # Dashboard settings
 dashboard_port: 8053
+
+# LLM settings (official API strings from https://developers.openai.com/api/docs/models)
+# --- GPT-5 series (most capable) ---
+#   "gpt-5.4"          – Most capable, current flagship
+#   "gpt-5.4-pro"      – Smarter/more precise version of gpt-5.4
+#   "gpt-5.3"          – Previous frontier model
+#   "gpt-5-mini"       – Faster, cost-efficient GPT-5
+#   "gpt-5-nano"       – Fastest, cheapest GPT-5
+# --- GPT-4 series (solid & widely available) ---
+#   "gpt-4.1"          – Smartest non-reasoning model (good for structured output)
+#   "gpt-4.1-mini"     – Smaller, faster GPT-4.1
+#   "gpt-4.1-nano"     – Fastest, cheapest GPT-4.1
+# --- Reasoning models ---
+#   "o4-mini"          – Fast, cost-efficient reasoning
+#   "o3"               – Complex reasoning tasks
+llm_model: "gpt-5-nano"
+# Max tokens the LLM can generate per response. Increase if feedback gets cut off.
+# For reasoning models (gpt-5), 16384+ is recommended to cover internal reasoning + output.
+max_tokens: 16384

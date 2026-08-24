@@ -11,6 +11,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 
+
 class GraderConfig(BaseModel):
     """
     Configuration model for the grader.
@@ -21,7 +22,12 @@ class GraderConfig(BaseModel):
     tests_dir: Optional[Path] = Field(None, description="Path to shared test files")
     test_data_dir: Optional[Path] = Field(None, description="Path to test data folder")
     grades_dir: Optional[Path] = Field(None, description="Path to save aggregated grades")
-    
+
+    # LLM settings
+    llm_model: str = Field("gpt-5-nano", description="OpenAI model to use for LLM grading (set in grader_config.yml)")
+    max_tokens: int = Field(4096, description="Max tokens the LLM can generate per response")
+    openai_api_key: Optional[str] = Field(None, description="OpenAI API key")
+
     # Flags can also be configured
     skip_llm: bool = Field(False, description="Skip LLM grading")
     only_dashboard: bool = Field(False, description="Launch dashboard with existing grades (skip grading)")
